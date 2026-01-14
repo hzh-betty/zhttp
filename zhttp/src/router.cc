@@ -8,12 +8,13 @@ namespace zhttp {
 
 Router::Router() {
   // 默认 404 处理器
-  not_found_handler_ = [](const HttpRequest::ptr & /*request*/,
-                          HttpResponse &response) {
+  RouterCallback default_404 = [](const HttpRequest::ptr & /*request*/,
+                                  HttpResponse &response) {
     response.status(HttpStatus::NOT_FOUND)
         .content_type("text/html; charset=utf-8")
         .body("<html><body><h1>404 Not Found</h1></body></html>");
   };
+  not_found_handler_ = RouteHandlerWrapper(std::move(default_404));
 }
 
 bool Router::has_param(const std::string &path) const {
@@ -55,12 +56,13 @@ std::regex Router::build_param_regex(const std::string &path,
   return std::regex(regex_pattern.str());
 }
 
-void Router::add_route(HttpMethod method, const std::string &path,
-                       RouteHandler handler) {
+// 内部实现
+void Router::add_route_internal(HttpMethod method, const std::string &path,
+                                RouteHandlerWrapper wrapper) {
   // 查找是否已存在相同 pattern 的路由
   for (auto &entry : routes_) {
     if (entry.pattern == path) {
-      entry.handlers[method] = std::move(handler);
+      entry.handlers[method] = std::move(wrapper);
       return;
     }
   }
@@ -76,19 +78,31 @@ void Router::add_route(HttpMethod method, const std::string &path,
     entry.type = RouteEntry::Type::STATIC;
   }
 
-  entry.handlers[method] = std::move(handler);
+  entry.handlers[method] = std::move(wrapper);
   routes_.push_back(std::move(entry));
 }
 
-void Router::add_regex_route(HttpMethod method,
-                             const std::string &regex_pattern,
-                             const std::vector<std::string> &param_names,
-                             RouteHandler handler) {
+// 回调函数方式
+void Router::add_route(HttpMethod method, const std::string &path,
+                       RouterCallback callback) {
+  add_route_internal(method, path, RouteHandlerWrapper(std::move(callback)));
+}
+
+// 处理器对象方式
+void Router::add_route(HttpMethod method, const std::string &path,
+                       RouteHandler::ptr handler) {
+  add_route_internal(method, path, RouteHandlerWrapper(std::move(handler)));
+}
+
+// 内部实现
+void Router::add_regex_route_internal(
+    HttpMethod method, const std::string &regex_pattern,
+    const std::vector<std::string> &param_names, RouteHandlerWrapper wrapper) {
   // 查找是否已存在相同 pattern 的路由
   for (auto &entry : routes_) {
     if (entry.type == RouteEntry::Type::REGEX &&
         entry.pattern == regex_pattern) {
-      entry.handlers[method] = std::move(handler);
+      entry.handlers[method] = std::move(wrapper);
       return;
     }
   }
@@ -98,23 +112,57 @@ void Router::add_regex_route(HttpMethod method,
   entry.pattern = regex_pattern;
   entry.regex = std::regex(regex_pattern);
   entry.param_names = param_names;
-  entry.handlers[method] = std::move(handler);
+  entry.handlers[method] = std::move(wrapper);
   routes_.push_back(std::move(entry));
 }
 
-void Router::get(const std::string &path, RouteHandler handler) {
+// 回调函数方式
+void Router::add_regex_route(HttpMethod method,
+                             const std::string &regex_pattern,
+                             const std::vector<std::string> &param_names,
+                             RouterCallback callback) {
+  add_regex_route_internal(method, regex_pattern, param_names,
+                           RouteHandlerWrapper(std::move(callback)));
+}
+
+// 处理器对象方式
+void Router::add_regex_route(HttpMethod method,
+                             const std::string &regex_pattern,
+                             const std::vector<std::string> &param_names,
+                             RouteHandler::ptr handler) {
+  add_regex_route_internal(method, regex_pattern, param_names,
+                           RouteHandlerWrapper(std::move(handler)));
+}
+
+void Router::get(const std::string &path, RouterCallback callback) {
+  add_route(HttpMethod::GET, path, std::move(callback));
+}
+
+void Router::get(const std::string &path, RouteHandler::ptr handler) {
   add_route(HttpMethod::GET, path, std::move(handler));
 }
 
-void Router::post(const std::string &path, RouteHandler handler) {
+void Router::post(const std::string &path, RouterCallback callback) {
+  add_route(HttpMethod::POST, path, std::move(callback));
+}
+
+void Router::post(const std::string &path, RouteHandler::ptr handler) {
   add_route(HttpMethod::POST, path, std::move(handler));
 }
 
-void Router::put(const std::string &path, RouteHandler handler) {
+void Router::put(const std::string &path, RouterCallback callback) {
+  add_route(HttpMethod::PUT, path, std::move(callback));
+}
+
+void Router::put(const std::string &path, RouteHandler::ptr handler) {
   add_route(HttpMethod::PUT, path, std::move(handler));
 }
 
-void Router::del(const std::string &path, RouteHandler handler) {
+void Router::del(const std::string &path, RouterCallback callback) {
+  add_route(HttpMethod::DELETE, path, std::move(callback));
+}
+
+void Router::del(const std::string &path, RouteHandler::ptr handler) {
   add_route(HttpMethod::DELETE, path, std::move(handler));
 }
 
@@ -257,8 +305,12 @@ bool Router::route(const HttpRequest::ptr &request, HttpResponse &response) {
   return entry != nullptr;
 }
 
-void Router::set_not_found_handler(RouteHandler handler) {
-  not_found_handler_ = std::move(handler);
+void Router::set_not_found_handler(RouterCallback callback) {
+  not_found_handler_ = RouteHandlerWrapper(std::move(callback));
+}
+
+void Router::set_not_found_handler(RouteHandler::ptr handler) {
+  not_found_handler_ = RouteHandlerWrapper(std::move(handler));
 }
 
 } // namespace zhttp

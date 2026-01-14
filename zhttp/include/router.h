@@ -4,6 +4,7 @@
 #include "http_request.h"
 #include "http_response.h"
 #include "middleware.h"
+#include "route_handler.h"
 
 #include <functional>
 #include <memory>
@@ -15,10 +16,38 @@
 namespace zhttp {
 
 /**
- * @brief 路由处理函数类型
+ * @brief 路由处理器包装类
+ * 统一处理 RouterCallback 和 RouteHandler::ptr
  */
-using RouteHandler =
-    std::function<void(const HttpRequest::ptr &, HttpResponse &)>;
+class RouteHandlerWrapper {
+public:
+  RouteHandlerWrapper() = default;
+
+  // 从回调函数构造
+  RouteHandlerWrapper(RouterCallback callback)
+      : callback_(std::move(callback)) {}
+
+  // 从处理器对象构造
+  RouteHandlerWrapper(RouteHandler::ptr handler)
+      : handler_(std::move(handler)) {}
+
+  // 执行处理
+  void operator()(const HttpRequest::ptr &request,
+                  HttpResponse &response) const {
+    if (callback_) {
+      callback_(request, response);
+    } else if (handler_) {
+      handler_->handle(request, response);
+    }
+  }
+
+  // 检查是否有效
+  explicit operator bool() const { return callback_ || handler_; }
+
+private:
+  RouterCallback callback_;
+  RouteHandler::ptr handler_;
+};
 
 /**
  * @brief 路由条目
@@ -36,9 +65,10 @@ struct RouteEntry {
   Type type = Type::STATIC; // 路由类型
   std::string pattern;      // 路由模式
   std::regex regex;         // 正则表达式（当 type == REGEX）
-  std::vector<std::string> param_names;                  // 参数名称列表
-  std::unordered_map<HttpMethod, RouteHandler> handlers; // 方法 -> 处理器
-  std::vector<Middleware::ptr> middlewares;              // 路由级中间件
+  std::vector<std::string> param_names; // 参数名称列表
+  std::unordered_map<HttpMethod, RouteHandlerWrapper>
+      handlers;                             // 方法 -> 处理器
+  std::vector<Middleware::ptr> middlewares; // 路由级中间件
 };
 
 /**
@@ -50,108 +80,117 @@ public:
   Router();
 
   /**
-   * @brief 注册静态/参数路由
-   * @param method HTTP 方法
-   * @param path 路由路径（支持 :param 格式）
-   * @param handler 处理函数
+   * @brief 注册静态/参数路由（回调函数方式）
    */
   void add_route(HttpMethod method, const std::string &path,
-                 RouteHandler handler);
+                 RouterCallback callback);
 
   /**
-   * @brief 注册正则表达式路由
-   * @param method HTTP 方法
-   * @param regex_pattern 正则表达式模式
-   * @param param_names 捕获组对应的参数名称
-   * @param handler 处理函数
+   * @brief 注册静态/参数路由（处理器对象方式）
+   */
+  void add_route(HttpMethod method, const std::string &path,
+                 RouteHandler::ptr handler);
+
+  /**
+   * @brief 注册正则表达式路由（回调函数方式）
    */
   void add_regex_route(HttpMethod method, const std::string &regex_pattern,
                        const std::vector<std::string> &param_names,
-                       RouteHandler handler);
+                       RouterCallback callback);
 
   /**
-   * @brief 注册 GET 路由
+   * @brief 注册正则表达式路由（处理器对象方式）
    */
-  void get(const std::string &path, RouteHandler handler);
+  void add_regex_route(HttpMethod method, const std::string &regex_pattern,
+                       const std::vector<std::string> &param_names,
+                       RouteHandler::ptr handler);
 
   /**
-   * @brief 注册 POST 路由
+   * @brief 注册 GET 路由（回调函数）
    */
-  void post(const std::string &path, RouteHandler handler);
+  void get(const std::string &path, RouterCallback callback);
 
   /**
-   * @brief 注册 PUT 路由
+   * @brief 注册 GET 路由（处理器对象）
    */
-  void put(const std::string &path, RouteHandler handler);
+  void get(const std::string &path, RouteHandler::ptr handler);
 
   /**
-   * @brief 注册 DELETE 路由
+   * @brief 注册 POST 路由（回调函数）
    */
-  void del(const std::string &path, RouteHandler handler);
+  void post(const std::string &path, RouterCallback callback);
+
+  /**
+   * @brief 注册 POST 路由（处理器对象）
+   */
+  void post(const std::string &path, RouteHandler::ptr handler);
+
+  /**
+   * @brief 注册 PUT 路由（回调函数）
+   */
+  void put(const std::string &path, RouterCallback callback);
+
+  /**
+   * @brief 注册 PUT 路由（处理器对象）
+   */
+  void put(const std::string &path, RouteHandler::ptr handler);
+
+  /**
+   * @brief 注册 DELETE 路由（回调函数）
+   */
+  void del(const std::string &path, RouterCallback callback);
+
+  /**
+   * @brief 注册 DELETE 路由（处理器对象）
+   */
+  void del(const std::string &path, RouteHandler::ptr handler);
 
   /**
    * @brief 添加全局中间件
-   * @param middleware 中间件对象
    */
   void use(Middleware::ptr middleware);
 
   /**
    * @brief 为特定路由添加中间件
-   * @param path 路由路径
-   * @param middleware 中间件对象
    */
   void use(const std::string &path, Middleware::ptr middleware);
 
   /**
    * @brief 路由请求
-   * @param request HTTP 请求
-   * @param response HTTP 响应
-   * @return 是否找到匹配的路由
    */
   bool route(const HttpRequest::ptr &request, HttpResponse &response);
 
   /**
-   * @brief 设置 404 处理器
-   * @param handler 处理函数
+   * @brief 设置 404 处理器（回调函数）
    */
-  void set_not_found_handler(RouteHandler handler);
+  void set_not_found_handler(RouterCallback callback);
+
+  /**
+   * @brief 设置 404 处理器（处理器对象）
+   */
+  void set_not_found_handler(RouteHandler::ptr handler);
 
 private:
-  /**
-   * @brief 判断路由模式是否包含参数
-   */
   bool has_param(const std::string &path) const;
-
-  /**
-   * @brief 从参数路由模式构建正则表达式
-   * @param path 路由路径（如 /user/:id/profile）
-   * @param param_names 输出参数名称列表
-   * @return 正则表达式对象
-   */
   std::regex build_param_regex(const std::string &path,
                                std::vector<std::string> &param_names);
-
-  /**
-   * @brief 匹配静态路由
-   */
   bool match_static_route(const std::string &path, const RouteEntry &entry);
-
-  /**
-   * @brief 匹配参数/正则路由
-   */
   bool match_regex_route(const std::string &path, const RouteEntry &entry,
                          std::unordered_map<std::string, std::string> &params);
-
-  /**
-   * @brief 查找匹配的路由
-   */
   RouteEntry *find_route(const std::string &path, HttpMethod method,
                          std::unordered_map<std::string, std::string> &params);
+
+  void add_route_internal(HttpMethod method, const std::string &path,
+                          RouteHandlerWrapper wrapper);
+  void add_regex_route_internal(HttpMethod method,
+                                const std::string &regex_pattern,
+                                const std::vector<std::string> &param_names,
+                                RouteHandlerWrapper wrapper);
 
 private:
   std::vector<RouteEntry> routes_;           // 路由表
   std::vector<Middleware::ptr> middlewares_; // 全局中间件
-  RouteHandler not_found_handler_;           // 404 处理器
+  RouteHandlerWrapper not_found_handler_;    // 404 处理器
 };
 
 } // namespace zhttp
