@@ -37,9 +37,9 @@ target_include_directories(zhttp PUBLIC
 
 # 链接依赖库
 target_link_libraries(zhttp PUBLIC
-    znet
-    zcoroutine
-    zlog
+    znet_static
+    zcoroutine_static
+    zlog_static
     OpenSSL::SSL
     OpenSSL::Crypto
     fmt::fmt

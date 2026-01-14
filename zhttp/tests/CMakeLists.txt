@@ -1,37 +1,42 @@
 find_package(GTest REQUIRED)
 
-# 单元测试
-set(UNIT_TEST_SOURCES
-    unit/http_parser_test.cc
-    unit/http_request_test.cc
-    unit/http_response_test.cc
-    unit/router_test.cc
-    unit/middleware_test.cc
+# 单元测试列表
+set(UNIT_TESTS
+    http_parser_test
+    http_request_test
+    http_response_test
+    router_test
+    middleware_test
 )
 
-add_executable(zhttp_unit_tests ${UNIT_TEST_SOURCES})
-target_link_libraries(zhttp_unit_tests
-    zhttp
-    GTest::gtest
-)
-target_include_directories(zhttp_unit_tests PRIVATE
-    ${CMAKE_SOURCE_DIR}/zhttp/include
-)
-
-add_test(NAME zhttp_unit_tests COMMAND zhttp_unit_tests)
+# 为每个单元测试创建可执行文件
+foreach(test_name ${UNIT_TESTS})
+    add_executable(${test_name} unit/${test_name}.cc)
+    target_link_libraries(${test_name}
+        zhttp
+        znet_static
+        zcoroutine_static
+        zlog_static
+        GTest::gtest
+        pthread
+    )
+    target_include_directories(${test_name} PRIVATE
+        ${CMAKE_SOURCE_DIR}/zhttp/include
+    )
+    add_test(NAME ${test_name} COMMAND ${test_name})
+endforeach()
 
 # 集成测试
-set(INTEGRATION_TEST_SOURCES
-    integration/http_server_test.cc
-)
-
-add_executable(zhttp_integration_tests ${INTEGRATION_TEST_SOURCES})
-target_link_libraries(zhttp_integration_tests
+add_executable(http_server_test integration/http_server_test.cc)
+target_link_libraries(http_server_test
     zhttp
+    znet_static
+    zcoroutine_static
+    zlog_static
     GTest::gtest
+    pthread
 )
-target_include_directories(zhttp_integration_tests PRIVATE
+target_include_directories(http_server_test PRIVATE
     ${CMAKE_SOURCE_DIR}/zhttp/include
 )
-
-add_test(NAME zhttp_integration_tests COMMAND zhttp_integration_tests)
+add_test(NAME http_server_test COMMAND http_server_test)

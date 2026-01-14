@@ -17,7 +17,7 @@ void init_logger(zlog::LogLevel::value level) {
   builder.buildLoggerLevel(level);
   builder.buildLoggerType(zlog::LoggerType::LOGGER_SYNC);
   builder.buildLoggerFormatter("[%d{%H:%M:%S}][%c][%p]%T%m%n");
-  builder.buildLoggerSink<zlog::StdoutSink>();
+  builder.buildLoggerSink<zlog::StdOutSink>();
 
   g_logger = builder.build();
 }

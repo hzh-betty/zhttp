@@ -6,6 +6,9 @@ project(znet LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# 查找依赖
+find_package(Threads REQUIRED)
+
 # 收集源文件
 file(GLOB ZNET_SOURCES
     ${PROJECT_SOURCE_DIR}/src/*.cc
