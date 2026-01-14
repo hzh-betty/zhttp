@@ -3,6 +3,7 @@
 #include "zhttp_logger.h"
 
 #include "address.h"
+#include "https_server.h"
 #include "io/io_scheduler.h"
 
 #include <csignal>

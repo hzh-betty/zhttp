@@ -1,8 +1,5 @@
 #include "router.h"
-
 #include "zhttp_logger.h"
-
-#include <sstream>
 
 namespace zhttp {
 
@@ -17,106 +14,61 @@ Router::Router() {
   not_found_handler_ = RouteHandlerWrapper(std::move(default_404));
 }
 
-bool Router::has_param(const std::string &path) const {
-  return path.find(':') != std::string::npos;
+bool Router::is_dynamic_path(const std::string &path) const {
+  return path.find(':') != std::string::npos ||
+         path.find('*') != std::string::npos;
 }
 
-std::regex Router::build_param_regex(const std::string &path,
-                                     std::vector<std::string> &param_names) {
-  param_names.clear();
-  std::ostringstream regex_pattern;
-  regex_pattern << "^";
+// ========== 路由注册 ==========
 
-  size_t pos = 0;
-  while (pos < path.size()) {
-    if (path[pos] == ':') {
-      // 参数开始
-      size_t end = pos + 1;
-      while (end < path.size() && path[end] != '/') {
-        ++end;
-      }
-      std::string param_name = path.substr(pos + 1, end - pos - 1);
-      param_names.push_back(param_name);
-      regex_pattern << "([^/]+)";
-      pos = end;
-    } else {
-      // 普通字符，需要转义正则特殊字符
-      char c = path[pos];
-      if (c == '.' || c == '+' || c == '*' || c == '?' || c == '^' ||
-          c == '$' || c == '(' || c == ')' || c == '[' || c == ']' ||
-          c == '{' || c == '}' || c == '|' || c == '\\') {
-        regex_pattern << '\\';
-      }
-      regex_pattern << c;
-      ++pos;
-    }
-  }
-
-  regex_pattern << "$";
-  return std::regex(regex_pattern.str());
-}
-
-// 内部实现
 void Router::add_route_internal(HttpMethod method, const std::string &path,
                                 RouteHandlerWrapper wrapper) {
-  // 查找是否已存在相同 pattern 的路由
-  for (auto &entry : routes_) {
-    if (entry.pattern == path) {
-      entry.handlers[method] = std::move(wrapper);
-      return;
-    }
-  }
+  ZHTTP_LOG_DEBUG("Router::add_route {} {}", method_to_string(method), path);
 
-  // 创建新的路由条目
-  RouteEntry entry;
-  entry.pattern = path;
-
-  if (has_param(path)) {
-    entry.type = RouteEntry::Type::PARAM;
-    entry.regex = build_param_regex(path, entry.param_names);
+  if (is_dynamic_path(path)) {
+    // 动态路由 -> 基数树
+    radix_tree_.insert(method, path, std::move(wrapper));
+    ZHTTP_LOG_DEBUG("Added to radix tree: {}", path);
   } else {
-    entry.type = RouteEntry::Type::STATIC;
+    // 静态路由 -> 哈希表
+    static_routes_[path].handlers[method] = std::move(wrapper);
+    ZHTTP_LOG_DEBUG("Added to hash map: {}", path);
   }
-
-  entry.handlers[method] = std::move(wrapper);
-  routes_.push_back(std::move(entry));
 }
 
-// 回调函数方式
 void Router::add_route(HttpMethod method, const std::string &path,
                        RouterCallback callback) {
   add_route_internal(method, path, RouteHandlerWrapper(std::move(callback)));
 }
 
-// 处理器对象方式
 void Router::add_route(HttpMethod method, const std::string &path,
                        RouteHandler::ptr handler) {
   add_route_internal(method, path, RouteHandlerWrapper(std::move(handler)));
 }
 
-// 内部实现
 void Router::add_regex_route_internal(
     HttpMethod method, const std::string &regex_pattern,
     const std::vector<std::string> &param_names, RouteHandlerWrapper wrapper) {
+  ZHTTP_LOG_DEBUG("Router::add_regex_route {} {}", method_to_string(method),
+                  regex_pattern);
+
   // 查找是否已存在相同 pattern 的路由
-  for (auto &entry : routes_) {
-    if (entry.type == RouteEntry::Type::REGEX &&
-        entry.pattern == regex_pattern) {
+  for (auto &entry : regex_routes_) {
+    if (entry.pattern == regex_pattern) {
       entry.handlers[method] = std::move(wrapper);
       return;
     }
   }
 
-  RouteEntry entry;
-  entry.type = RouteEntry::Type::REGEX;
+  // 创建新的正则路由条目
+  RegexRouteEntry entry;
   entry.pattern = regex_pattern;
   entry.regex = std::regex(regex_pattern);
   entry.param_names = param_names;
   entry.handlers[method] = std::move(wrapper);
-  routes_.push_back(std::move(entry));
+  regex_routes_.push_back(std::move(entry));
 }
 
-// 回调函数方式
 void Router::add_regex_route(HttpMethod method,
                              const std::string &regex_pattern,
                              const std::vector<std::string> &param_names,
@@ -125,7 +77,6 @@ void Router::add_regex_route(HttpMethod method,
                            RouteHandlerWrapper(std::move(callback)));
 }
 
-// 处理器对象方式
 void Router::add_regex_route(HttpMethod method,
                              const std::string &regex_pattern,
                              const std::vector<std::string> &param_names,
@@ -133,6 +84,8 @@ void Router::add_regex_route(HttpMethod method,
   add_regex_route_internal(method, regex_pattern, param_names,
                            RouteHandlerWrapper(std::move(handler)));
 }
+
+// ========== 便捷方法 ==========
 
 void Router::get(const std::string &path, RouterCallback callback) {
   add_route(HttpMethod::GET, path, std::move(callback));
@@ -166,104 +119,85 @@ void Router::del(const std::string &path, RouteHandler::ptr handler) {
   add_route(HttpMethod::DELETE, path, std::move(handler));
 }
 
+// ========== 中间件 ==========
+
 void Router::use(Middleware::ptr middleware) {
   if (middleware) {
-    middlewares_.push_back(std::move(middleware));
+    global_middlewares_.push_back(std::move(middleware));
   }
 }
 
 void Router::use(const std::string &path, Middleware::ptr middleware) {
-  if (!middleware) {
-    return;
+  if (middleware) {
+    route_middlewares_[path].push_back(std::move(middleware));
   }
+}
 
-  // 查找已有路由并添加中间件
-  for (auto &entry : routes_) {
-    if (entry.pattern == path) {
-      entry.middlewares.push_back(std::move(middleware));
-      return;
+// ========== 路由匹配 ==========
+
+RouteContext Router::find_route(const std::string &path, HttpMethod method) {
+  RouteContext ctx;
+
+  ZHTTP_LOG_DEBUG("Router::find_route {} {}", method_to_string(method), path);
+
+  // 第一层: 静态路由哈希表查找 O(1)
+  auto static_it = static_routes_.find(path);
+  if (static_it != static_routes_.end()) {
+    auto handler_it = static_it->second.handlers.find(method);
+    if (handler_it != static_it->second.handlers.end()) {
+      ctx.found = true;
+      ctx.handler = handler_it->second;
+      ctx.middlewares = static_it->second.middlewares;
+      ZHTTP_LOG_DEBUG("Found in static routes (hash map): {}", path);
+      return ctx;
     }
   }
 
-  // 如果路由不存在，创建一个空路由条目仅用于中间件
-  RouteEntry entry;
-  entry.pattern = path;
-  if (has_param(path)) {
-    entry.type = RouteEntry::Type::PARAM;
-    entry.regex = build_param_regex(path, entry.param_names);
-  } else {
-    entry.type = RouteEntry::Type::STATIC;
-  }
-  entry.middlewares.push_back(std::move(middleware));
-  routes_.push_back(std::move(entry));
-}
-
-bool Router::match_static_route(const std::string &path,
-                                const RouteEntry &entry) {
-  return path == entry.pattern;
-}
-
-bool Router::match_regex_route(
-    const std::string &path, const RouteEntry &entry,
-    std::unordered_map<std::string, std::string> &params) {
-  std::smatch match;
-  if (std::regex_match(path, match, entry.regex)) {
-    // 提取参数
-    for (size_t i = 0; i < entry.param_names.size() && i + 1 < match.size();
-         ++i) {
-      params[entry.param_names[i]] = match[i + 1].str();
+  // 第二层: 基数树查找（动态路由，按优先级）
+  RouteMatch match = radix_tree_.find(path);
+  if (match.found && match.node) {
+    auto handler_it = match.node->handlers_.find(method);
+    if (handler_it != match.node->handlers_.end()) {
+      ctx.found = true;
+      ctx.handler = handler_it->second;
+      ctx.params = std::move(match.params);
+      ZHTTP_LOG_DEBUG("Found in radix tree: {}, params count: {}", path,
+                      ctx.params.size());
+      return ctx;
     }
-    return true;
   }
-  return false;
-}
 
-RouteEntry *
-Router::find_route(const std::string &path, HttpMethod method,
-                   std::unordered_map<std::string, std::string> &params) {
-  // 优先匹配静态路由
-  for (auto &entry : routes_) {
-    if (entry.type == RouteEntry::Type::STATIC) {
-      if (match_static_route(path, entry)) {
-        if (entry.handlers.find(method) != entry.handlers.end()) {
-          return &entry;
+  // 第三层: 正则路由匹配（回退）
+  for (const auto &entry : regex_routes_) {
+    std::smatch match_result;
+    if (std::regex_match(path, match_result, entry.regex)) {
+      auto handler_it = entry.handlers.find(method);
+      if (handler_it != entry.handlers.end()) {
+        ctx.found = true;
+        ctx.handler = handler_it->second;
+        ctx.middlewares = entry.middlewares;
+
+        // 提取参数
+        for (size_t i = 0;
+             i < entry.param_names.size() && i + 1 < match_result.size(); ++i) {
+          ctx.params[entry.param_names[i]] = match_result[i + 1].str();
         }
+        ZHTTP_LOG_DEBUG("Found in regex routes: {}", path);
+        return ctx;
       }
     }
   }
 
-  // 然后匹配参数路由
-  for (auto &entry : routes_) {
-    if (entry.type == RouteEntry::Type::PARAM) {
-      if (match_regex_route(path, entry, params)) {
-        if (entry.handlers.find(method) != entry.handlers.end()) {
-          return &entry;
-        }
-      }
-    }
-  }
-
-  // 最后匹配正则路由
-  for (auto &entry : routes_) {
-    if (entry.type == RouteEntry::Type::REGEX) {
-      if (match_regex_route(path, entry, params)) {
-        if (entry.handlers.find(method) != entry.handlers.end()) {
-          return &entry;
-        }
-      }
-    }
-  }
-
-  return nullptr;
+  ZHTTP_LOG_DEBUG("Route not found: {}", path);
+  return ctx;
 }
 
 bool Router::route(const HttpRequest::ptr &request, HttpResponse &response) {
-  std::unordered_map<std::string, std::string> params;
-  RouteEntry *entry = find_route(request->path(), request->method(), params);
+  // 查找路由
+  RouteContext ctx = find_route(request->path(), request->method());
 
   // 设置路径参数
-  for (const auto &pair : params) {
-    // const_cast 用于设置参数，因为 request 是共享指针
+  for (const auto &pair : ctx.params) {
     const_cast<HttpRequest *>(request.get())
         ->set_path_param(pair.first, pair.second);
   }
@@ -272,27 +206,30 @@ bool Router::route(const HttpRequest::ptr &request, HttpResponse &response) {
   MiddlewareChain chain;
 
   // 添加全局中间件
-  for (const auto &mw : middlewares_) {
+  for (const auto &mw : global_middlewares_) {
     chain.add(mw);
   }
 
   // 添加路由级中间件
-  if (entry) {
-    for (const auto &mw : entry->middlewares) {
+  auto mw_it = route_middlewares_.find(request->path());
+  if (mw_it != route_middlewares_.end()) {
+    for (const auto &mw : mw_it->second) {
       chain.add(mw);
     }
+  }
+
+  // 添加匹配到的路由中间件
+  for (const auto &mw : ctx.middlewares) {
+    chain.add(mw);
   }
 
   // 执行 before 中间件
   bool should_continue = chain.execute_before(request, response);
 
   if (should_continue) {
-    if (entry) {
+    if (ctx.found) {
       // 执行处理器
-      auto handler_it = entry->handlers.find(request->method());
-      if (handler_it != entry->handlers.end()) {
-        handler_it->second(request, response);
-      }
+      ctx.handler(request, response);
     } else {
       // 404 处理
       not_found_handler_(request, response);
@@ -302,7 +239,7 @@ bool Router::route(const HttpRequest::ptr &request, HttpResponse &response) {
   // 执行 after 中间件（逆序）
   chain.execute_after(request, response);
 
-  return entry != nullptr;
+  return ctx.found;
 }
 
 void Router::set_not_found_handler(RouterCallback callback) {

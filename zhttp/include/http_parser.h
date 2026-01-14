@@ -3,7 +3,6 @@
 
 #include "http_request.h"
 
-#include <memory>
 #include <string>
 
 // 前向声明

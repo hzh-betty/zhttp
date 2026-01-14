@@ -18,6 +18,7 @@ set(ZHTTP_SOURCES
     src/http_response.cc
     src/http_parser.cc
     src/middleware.cc
+    src/radix_tree.cc
     src/router.cc
     src/http_server.cc
     src/ssl_context.cc
