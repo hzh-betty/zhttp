@@ -24,6 +24,7 @@ void *Allocator::allocate(size_t size) {
 }
 
 void Allocator::deallocate(void *ptr, size_t size) {
+  (void)size; // 参数保留用于未来扩展（如内存池统计）
   if (!ptr) {
     return;
   }

@@ -1,8 +1,8 @@
 #include "address.h"
 #include "znet_logger.h"
+#include <cstdio>
 #include <cstring>
 #include <netdb.h>
-#include <cstdio>
 
 namespace znet {
 
@@ -37,6 +37,7 @@ std::vector<Address::ptr> Address::lookup(const std::string &host,
 }
 
 Address::ptr Address::create(const sockaddr *addr, socklen_t addrlen) {
+  (void)addrlen; // 参数保留用于未来扩展
   if (!addr) {
     return nullptr;
   }

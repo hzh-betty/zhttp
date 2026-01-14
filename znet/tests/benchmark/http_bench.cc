@@ -8,11 +8,11 @@
  * 3. 与 wrk 工具集成进行压测
  */
 
-#include "tcp_server.h"
-#include "tcp_connection.h"
 #include "address.h"
 #include "buff.h"
 #include "io/io_scheduler.h"
+#include "tcp_connection.h"
+#include "tcp_server.h"
 #include "znet_logger.h"
 
 #include <atomic>
@@ -30,12 +30,12 @@ using namespace zcoroutine;
 
 // ========================= 全局配置 =========================
 struct BenchConfig {
-  int port = 9000;            // 服务器端口
-  int thread_num = 4;         // 工作线程数
-  int wrk_threads = 4;        // wrk压测线程数
-  int wrk_connections = 100;  // wrk并发连接数
-  int wrk_duration = 10;      // wrk压测时长（秒）
-  std::string test_name;      // 测试名称
+  int port = 9000;           // 服务器端口
+  int thread_num = 4;        // 工作线程数
+  int wrk_threads = 4;       // wrk压测线程数
+  int wrk_connections = 100; // wrk并发连接数
+  int wrk_duration = 10;     // wrk压测时长（秒）
+  std::string test_name;     // 测试名称
 };
 
 // ========================= 统计数据 =========================
@@ -105,7 +105,8 @@ class HttpServer : public TcpServer {
 public:
   using ptr = std::shared_ptr<HttpServer>;
 
-  HttpServer(IoScheduler::ptr io_worker, IoScheduler::ptr accept_worker = nullptr)
+  HttpServer(IoScheduler::ptr io_worker,
+             IoScheduler::ptr accept_worker = nullptr)
       : TcpServer(io_worker, accept_worker) {}
 
 protected:
@@ -117,29 +118,28 @@ protected:
     g_stats.connections_accepted.fetch_add(1, std::memory_order_relaxed);
 
     // 设置回调
-    conn->set_message_callback(
-        [](const TcpConnectionPtr &conn, Buffer *buf) {
-          size_t readable = buf->readable_bytes();
-          if (readable > 0) {
-            g_stats.bytes_received.fetch_add(readable, std::memory_order_relaxed);
+    conn->set_message_callback([](const TcpConnectionPtr &conn, Buffer *buf) {
+      size_t readable = buf->readable_bytes();
+      if (readable > 0) {
+        g_stats.bytes_received.fetch_add(readable, std::memory_order_relaxed);
 
-            // 简单检查是否收到完整HTTP请求（查找\r\n\r\n）
-            const char *crlf = buf->find_crlf();
-            if (crlf) {
-              // 清空输入缓冲区
-              buf->retrieve_all();
+        // 简单检查是否收到完整HTTP请求（查找\r\n\r\n）
+        const char *crlf = buf->find_crlf();
+        if (crlf) {
+          // 清空输入缓冲区
+          buf->retrieve_all();
 
-              // 发送HTTP响应
-              conn->send(HTTP_RESPONSE, HTTP_RESPONSE_LEN);
-              g_stats.bytes_sent.fetch_add(HTTP_RESPONSE_LEN,
-                                          std::memory_order_relaxed);
-              g_stats.requests_handled.fetch_add(1, std::memory_order_relaxed);
+          // 发送HTTP响应
+          conn->send(HTTP_RESPONSE, HTTP_RESPONSE_LEN);
+          g_stats.bytes_sent.fetch_add(HTTP_RESPONSE_LEN,
+                                       std::memory_order_relaxed);
+          g_stats.requests_handled.fetch_add(1, std::memory_order_relaxed);
 
-              // 短连接：关闭连接
-              conn->shutdown();
-            }
-          }
-        });
+          // 短连接：关闭连接
+          conn->shutdown();
+        }
+      }
+    });
 
     conn->set_connection_callback([](const TcpConnectionPtr &conn) {
       if (conn->connected()) {
@@ -148,7 +148,7 @@ protected:
     });
 
     conn->set_close_callback([](const TcpConnectionPtr &conn) {
-      // 连接关闭
+      (void)conn; // 连接关闭回调，参数保留用于未来扩展
     });
   }
 };
@@ -157,13 +157,15 @@ protected:
 
 void start_server(const BenchConfig &config) {
 
-  auto io_worker = std::make_shared<IoScheduler>(config.thread_num, "HttpWorker", true);
+  auto io_worker =
+      std::make_shared<IoScheduler>(config.thread_num, "HttpWorker", true);
   auto accept_worker = std::make_shared<IoScheduler>(1, "HttpAcceptor", true);
 
   g_server = std::make_shared<HttpServer>(io_worker, accept_worker);
   g_server->set_name("HttpBenchServer");
 
-  auto addr = std::make_shared<IPv4Address>("0.0.0.0", static_cast<uint16_t>(config.port));
+  auto addr = std::make_shared<IPv4Address>("0.0.0.0",
+                                            static_cast<uint16_t>(config.port));
   if (!addr) {
     std::cerr << "Invalid address" << std::endl;
     exit(1);
