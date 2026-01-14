@@ -1,6 +1,7 @@
 #include "http_parser.h"
 
 #include "buff.h"
+#include "zhttp_logger.h"
 
 #include <algorithm>
 #include <cstring>
@@ -17,11 +18,17 @@ void HttpParser::reset() {
 }
 
 ParseResult HttpParser::parse(znet::Buffer *buffer) {
+  ZHTTP_LOG_DEBUG("Parsing HTTP request, buffer size: {}",
+                  buffer->readable_bytes());
+
   while (state_ != ParseState::COMPLETE && state_ != ParseState::ERROR) {
     if (state_ == ParseState::REQUEST_LINE || state_ == ParseState::HEADERS) {
       // 查找 CRLF
       const char *crlf = buffer->find_crlf();
       if (crlf == nullptr) {
+        ZHTTP_LOG_DEBUG("Need more data, current state: {}",
+                        state_ == ParseState::REQUEST_LINE ? "REQUEST_LINE"
+                                                           : "HEADERS");
         return ParseResult::NEED_MORE;
       }
 
@@ -30,18 +37,23 @@ ParseResult HttpParser::parse(znet::Buffer *buffer) {
 
       ParseResult result;
       if (state_ == ParseState::REQUEST_LINE) {
+        ZHTTP_LOG_DEBUG("Parsing request line: {}", std::string(begin, end));
         result = parse_request_line(begin, end);
       } else {
+        ZHTTP_LOG_DEBUG("Parsing header: {}", std::string(begin, end));
         result = parse_headers(begin, end);
       }
 
       if (result == ParseResult::ERROR) {
+        ZHTTP_LOG_ERROR("Parse error: {}", error_);
         return result;
       }
 
       // 消费已解析的数据（包括 CRLF）
       buffer->retrieve(static_cast<size_t>(end - begin + 2));
     } else if (state_ == ParseState::BODY) {
+      ZHTTP_LOG_DEBUG("Parsing body, expected length: {}, available: {}",
+                      content_length_, buffer->readable_bytes());
       ParseResult result = parse_body(buffer);
       if (result != ParseResult::COMPLETE) {
         return result;
@@ -50,6 +62,8 @@ ParseResult HttpParser::parse(znet::Buffer *buffer) {
   }
 
   if (state_ == ParseState::COMPLETE) {
+    ZHTTP_LOG_INFO("HTTP request parsed successfully: {} {}",
+                   method_to_string(request_->method()), request_->path());
     return ParseResult::COMPLETE;
   }
   return ParseResult::ERROR;

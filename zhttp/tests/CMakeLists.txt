@@ -7,6 +7,8 @@ set(UNIT_TESTS
     http_response_test
     router_test
     middleware_test
+    http_parser_detailed_test
+    router_detailed_test
 )
 
 # 为每个单元测试创建可执行文件
