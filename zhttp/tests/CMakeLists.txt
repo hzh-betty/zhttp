@@ -9,6 +9,9 @@ set(UNIT_TESTS
     middleware_test
     http_parser_detailed_test
     router_detailed_test
+    regex_prefix_bucket_test
+    router_comprehensive_test
+    router_comprehensive_test2
 )
 
 # 为每个单元测试创建可执行文件

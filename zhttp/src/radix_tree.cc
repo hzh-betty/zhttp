@@ -22,21 +22,67 @@ std::vector<std::string> RadixTree::split_path(const std::string &path) const {
 std::pair<NodeType, std::string>
 RadixTree::parse_segment(const std::string &seg) const {
   if (seg.empty()) {
-    return {NodeType::STATIC, seg};
+    return std::make_pair(NodeType::STATIC, seg);
   }
 
   if (seg[0] == ':') {
-    // 参数节点 :id -> param_name = "id"
-    return {NodeType::PARAM, seg.substr(1)};
+    return std::make_pair(NodeType::PARAM, seg.substr(1));
   }
 
   if (seg[0] == '*') {
-    // 通配符节点 *path -> param_name = "path" (或为空)
     std::string name = seg.length() > 1 ? seg.substr(1) : "";
-    return {NodeType::CATCH_ALL, name};
+    return std::make_pair(NodeType::CATCH_ALL, name);
   }
 
-  return {NodeType::STATIC, seg};
+  return std::make_pair(NodeType::STATIC, seg);
+}
+
+std::string RadixTree::extract_static_prefix(const std::string &pattern) const {
+  std::string prefix;
+
+  for (size_t i = 0; i < pattern.size(); ++i) {
+    char c = pattern[i];
+
+    // 遇到正则元字符停止
+    if (c == '(' || c == '[' || c == '.' || c == '*' || c == '+' || c == '?' ||
+        c == '{' || c == '\\' || c == '^' || c == '$' || c == '|') {
+      break;
+    }
+    prefix += c;
+  }
+
+  // 去掉末尾不完整的路径段
+  size_t last_slash = prefix.rfind('/');
+  if (last_slash != std::string::npos && last_slash < prefix.length() - 1) {
+    prefix = prefix.substr(0, last_slash + 1);
+  }
+
+  ZHTTP_LOG_DEBUG("Extracted prefix '{}' from pattern '{}'", prefix, pattern);
+  return prefix;
+}
+
+RadixNodePtr RadixTree::find_or_create_prefix_node(const std::string &prefix) {
+  if (prefix.empty() || prefix == "/") {
+    return root_;
+  }
+
+  std::vector<std::string> segments = split_path(prefix);
+  RadixNodePtr current = root_;
+
+  for (const auto &seg : segments) {
+    RadixNodePtr child = current->find_static_child(seg);
+
+    if (!child) {
+      child = std::make_shared<RadixNode>();
+      child->type_ = NodeType::STATIC;
+      child->path_ = seg;
+      current->add_child(child);
+    }
+
+    current = child;
+  }
+
+  return current;
 }
 
 void RadixTree::insert(HttpMethod method, const std::string &path,
@@ -53,7 +99,6 @@ void RadixTree::insert(HttpMethod method, const std::string &path,
 
     RadixNodePtr child = nullptr;
 
-    // 根据类型查找现有子节点
     if (type == NodeType::STATIC) {
       child = current->find_static_child(seg);
     } else if (type == NodeType::PARAM) {
@@ -63,14 +108,13 @@ void RadixTree::insert(HttpMethod method, const std::string &path,
     }
 
     if (!child) {
-      // 创建新节点
       child = std::make_shared<RadixNode>();
       child->type_ = type;
 
       if (type == NodeType::STATIC) {
         child->path_ = seg;
       } else {
-        child->path_ = seg; // 保留原始路径用于调试
+        child->path_ = seg;
         child->param_name_ = param_name;
       }
 
@@ -80,69 +124,129 @@ void RadixTree::insert(HttpMethod method, const std::string &path,
     current = child;
   }
 
-  // 设置处理器
   current->handlers_[method] = std::move(handler);
-  ZHTTP_LOG_DEBUG("Route registered: {} {} -> node has {} handlers",
-                  method_to_string(method), path, current->handlers_.size());
+  ZHTTP_LOG_DEBUG("Dynamic route registered: {} {}", method_to_string(method),
+                  path);
 }
 
-RouteMatch RadixTree::find(const std::string &path) const {
-  ZHTTP_LOG_DEBUG("RadixTree::find {}", path);
+void RadixTree::insert_regex(HttpMethod method, const std::string &pattern,
+                             const std::vector<std::string> &param_names,
+                             RouteHandlerWrapper handler) {
+  ZHTTP_LOG_DEBUG("RadixTree::insert_regex {} {}", method_to_string(method),
+                  pattern);
 
-  RouteMatch result;
-  std::vector<std::string> segments = split_path(path);
+  std::string prefix = extract_static_prefix(pattern);
+  RadixNodePtr node = find_or_create_prefix_node(prefix);
 
-  if (segments.empty()) {
-    // 根路径
-    if (root_->is_leaf()) {
-      result.found = true;
-      result.node = root_;
+  for (auto &regex_route : node->regex_routes_) {
+    if (regex_route.pattern == pattern) {
+      regex_route.handlers[method] = std::move(handler);
+      ZHTTP_LOG_DEBUG("Regex route updated: {} {} at prefix '{}'",
+                      method_to_string(method), pattern, prefix);
+      return;
     }
-    return result;
   }
 
-  match_recursive(root_, segments, 0, result);
-  return result;
+  NodeRegexRoute route;
+  route.regex = std::regex(pattern);
+  route.pattern = pattern;
+  route.param_names = param_names;
+  route.handlers[method] = std::move(handler);
+
+  node->regex_routes_.push_back(std::move(route));
+  ZHTTP_LOG_DEBUG("Regex route registered: {} {} at prefix '{}'",
+                  method_to_string(method), pattern, prefix);
 }
 
-bool RadixTree::match_recursive(const RadixNodePtr &node,
-                                const std::vector<std::string> &segments,
-                                size_t index, RouteMatch &result) const {
-  // 所有段都匹配完成
+RouteMatchContext RadixTree::find(const std::string &path,
+                                  HttpMethod method) const {
+  ZHTTP_LOG_DEBUG("RadixTree::find {} {}", method_to_string(method), path);
+
+  RouteMatchContext ctx;
+  std::vector<std::string> segments = split_path(path);
+
+  // 1. 收集前缀路径上的所有节点（用于正则匹配）
+  std::vector<RadixNodePtr> prefix_nodes;
+  collect_prefix_nodes(root_, segments, 0, prefix_nodes);
+
+  // 2. 尝试动态路由匹配（优先级最高）
+  if (match_dynamic(root_, segments, 0, ctx, method)) {
+    ctx.match_type = RouteMatchContext::MatchType::DYNAMIC;
+    ZHTTP_LOG_DEBUG("Matched dynamic route: {}", path);
+    return ctx;
+  }
+
+  // 3. 在收集到的前缀节点上尝试正则匹配
+  if (match_regex_on_path(path, method, prefix_nodes, ctx)) {
+    ctx.match_type = RouteMatchContext::MatchType::REGEX;
+    ZHTTP_LOG_DEBUG("Matched regex route: {}", path);
+    return ctx;
+  }
+
+  ZHTTP_LOG_DEBUG("No route matched: {}", path);
+  return ctx;
+}
+
+void RadixTree::collect_prefix_nodes(const RadixNodePtr &node,
+                                     const std::vector<std::string> &segments,
+                                     size_t index,
+                                     std::vector<RadixNodePtr> &nodes) const {
+  // 添加当前节点（可能有正则路由）
+  nodes.push_back(node);
+
+  // 如果已处理完所有段，停止
+  if (index >= segments.size()) {
+    return;
+  }
+
+  const std::string &seg = segments[index];
+
+  // 只沿着静态节点收集（正则路由的前缀都是静态的）
+  RadixNodePtr static_child = node->find_static_child(seg);
+  if (static_child) {
+    collect_prefix_nodes(static_child, segments, index + 1, nodes);
+  }
+}
+
+bool RadixTree::match_dynamic(const RadixNodePtr &node,
+                              const std::vector<std::string> &segments,
+                              size_t index, RouteMatchContext &ctx,
+                              HttpMethod method) const {
   if (index >= segments.size()) {
     if (node->is_leaf()) {
-      result.found = true;
-      result.node = node;
-      return true;
+      auto handler_it = node->handlers_.find(method);
+      if (handler_it != node->handlers_.end()) {
+        ctx.found = true;
+        ctx.handler = handler_it->second;
+        return true;
+      }
     }
     return false;
   }
 
   const std::string &seg = segments[index];
 
-  // 优先级1: 尝试静态匹配（最高优先级，Early Return）
+  // 优先级1: 静态匹配
   RadixNodePtr static_child = node->find_static_child(seg);
   if (static_child) {
-    if (match_recursive(static_child, segments, index + 1, result)) {
-      return true; // Early Return: 静态匹配成功，不再尝试其他
-    }
-  }
-
-  // 优先级2: 尝试参数匹配
-  RadixNodePtr param_child = node->find_param_child();
-  if (param_child) {
-    // 保存当前参数
-    std::string param_value = seg;
-    if (match_recursive(param_child, segments, index + 1, result)) {
-      result.params[param_child->param_name_] = param_value;
+    if (match_dynamic(static_child, segments, index + 1, ctx, method)) {
       return true;
     }
   }
 
-  // 优先级3: 尝试通配符匹配（最低优先级）
+  // 优先级2: 参数匹配
+  RadixNodePtr param_child = node->find_param_child();
+  if (param_child) {
+    std::string param_value = seg;
+    if (match_dynamic(param_child, segments, index + 1, ctx, method)) {
+      ctx.params[param_child->param_name_] = param_value;
+      return true;
+    }
+  }
+
+  // 优先级3: 通配符匹配
   RadixNodePtr catch_all = node->find_catch_all_child();
   if (catch_all) {
-    // 通配符匹配剩余所有路径
     std::string remaining;
     for (size_t i = index; i < segments.size(); ++i) {
       if (!remaining.empty()) {
@@ -151,13 +255,53 @@ bool RadixTree::match_recursive(const RadixNodePtr &node,
       remaining += segments[i];
     }
 
-    if (catch_all->is_leaf()) {
-      result.found = true;
-      result.node = catch_all;
+    auto handler_it = catch_all->handlers_.find(method);
+    if (handler_it != catch_all->handlers_.end()) {
+      ctx.found = true;
+      ctx.handler = handler_it->second;
       if (!catch_all->param_name_.empty()) {
-        result.params[catch_all->param_name_] = remaining;
+        ctx.params[catch_all->param_name_] = remaining;
       }
       return true;
+    }
+  }
+
+  return false;
+}
+
+bool RadixTree::match_regex_on_path(const std::string &full_path,
+                                    HttpMethod method,
+                                    const std::vector<RadixNodePtr> &path_nodes,
+                                    RouteMatchContext &ctx) const {
+  // 从最深的节点开始（最长前缀优先）
+  for (auto it = path_nodes.rbegin(); it != path_nodes.rend(); ++it) {
+    const RadixNodePtr &node = *it;
+
+    if (!node->has_regex()) {
+      continue;
+    }
+
+    ZHTTP_LOG_DEBUG("Checking {} regex routes at node",
+                    node->regex_routes_.size());
+
+    for (const auto &regex_route : node->regex_routes_) {
+      std::smatch match;
+      if (std::regex_match(full_path, match, regex_route.regex)) {
+        auto handler_it = regex_route.handlers.find(method);
+        if (handler_it != regex_route.handlers.end()) {
+          ctx.found = true;
+          ctx.handler = handler_it->second;
+
+          for (size_t i = 0;
+               i < regex_route.param_names.size() && i + 1 < match.size();
+               ++i) {
+            ctx.params[regex_route.param_names[i]] = match[i + 1].str();
+          }
+
+          ZHTTP_LOG_DEBUG("Regex matched: {}", regex_route.pattern);
+          return true;
+        }
+      }
     }
   }
 

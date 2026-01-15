@@ -28,11 +28,11 @@ void Router::add_route_internal(HttpMethod method, const std::string &path,
   if (is_dynamic_path(path)) {
     // 动态路由 -> 基数树
     radix_tree_.insert(method, path, std::move(wrapper));
-    ZHTTP_LOG_DEBUG("Added to radix tree: {}", path);
+    ZHTTP_LOG_DEBUG("Added to radix tree (dynamic): {}", path);
   } else {
     // 静态路由 -> 哈希表
     static_routes_[path].handlers[method] = std::move(wrapper);
-    ZHTTP_LOG_DEBUG("Added to hash map: {}", path);
+    ZHTTP_LOG_DEBUG("Added to hash map (static): {}", path);
   }
 }
 
@@ -52,21 +52,9 @@ void Router::add_regex_route_internal(
   ZHTTP_LOG_DEBUG("Router::add_regex_route {} {}", method_to_string(method),
                   regex_pattern);
 
-  // 查找是否已存在相同 pattern 的路由
-  for (auto &entry : regex_routes_) {
-    if (entry.pattern == regex_pattern) {
-      entry.handlers[method] = std::move(wrapper);
-      return;
-    }
-  }
-
-  // 创建新的正则路由条目
-  RegexRouteEntry entry;
-  entry.pattern = regex_pattern;
-  entry.regex = std::regex(regex_pattern);
-  entry.param_names = param_names;
-  entry.handlers[method] = std::move(wrapper);
-  regex_routes_.push_back(std::move(entry));
+  // 正则路由存入基数树（按前缀分桶）
+  radix_tree_.insert_regex(method, regex_pattern, param_names,
+                           std::move(wrapper));
 }
 
 void Router::add_regex_route(HttpMethod method,
@@ -153,39 +141,17 @@ RouteContext Router::find_route(const std::string &path, HttpMethod method) {
     }
   }
 
-  // 第二层: 基数树查找（动态路由，按优先级）
-  RouteMatch match = radix_tree_.find(path);
-  if (match.found && match.node) {
-    auto handler_it = match.node->handlers_.find(method);
-    if (handler_it != match.node->handlers_.end()) {
-      ctx.found = true;
-      ctx.handler = handler_it->second;
-      ctx.params = std::move(match.params);
-      ZHTTP_LOG_DEBUG("Found in radix tree: {}, params count: {}", path,
-                      ctx.params.size());
-      return ctx;
-    }
-  }
-
-  // 第三层: 正则路由匹配（回退）
-  for (const auto &entry : regex_routes_) {
-    std::smatch match_result;
-    if (std::regex_match(path, match_result, entry.regex)) {
-      auto handler_it = entry.handlers.find(method);
-      if (handler_it != entry.handlers.end()) {
-        ctx.found = true;
-        ctx.handler = handler_it->second;
-        ctx.middlewares = entry.middlewares;
-
-        // 提取参数
-        for (size_t i = 0;
-             i < entry.param_names.size() && i + 1 < match_result.size(); ++i) {
-          ctx.params[entry.param_names[i]] = match_result[i + 1].str();
-        }
-        ZHTTP_LOG_DEBUG("Found in regex routes: {}", path);
-        return ctx;
-      }
-    }
+  // 第二层: 基数树查找（动态路由 + 正则路由）
+  RouteMatchContext match = radix_tree_.find(path, method);
+  if (match.found) {
+    ctx.found = true;
+    ctx.handler = match.handler;
+    ctx.params = std::move(match.params);
+    ZHTTP_LOG_DEBUG("Found in radix tree: {}, match_type: {}", path,
+                    match.match_type == RouteMatchContext::MatchType::DYNAMIC
+                        ? "DYNAMIC"
+                        : "REGEX");
+    return ctx;
   }
 
   ZHTTP_LOG_DEBUG("Route not found: {}", path);

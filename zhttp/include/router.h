@@ -7,7 +7,6 @@
 #include "radix_tree.h"
 #include "route_handler.h"
 
-#include <regex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -18,17 +17,6 @@ namespace zhttp {
  * @brief 静态路由条目（用于哈希表快速查找）
  */
 struct StaticRouteEntry {
-  std::unordered_map<HttpMethod, RouteHandlerWrapper> handlers;
-  std::vector<Middleware::ptr> middlewares;
-};
-
-/**
- * @brief 正则路由条目
- */
-struct RegexRouteEntry {
-  std::string pattern;
-  std::regex regex;
-  std::vector<std::string> param_names;
   std::unordered_map<HttpMethod, RouteHandlerWrapper> handlers;
   std::vector<Middleware::ptr> middlewares;
 };
@@ -46,10 +34,10 @@ struct RouteContext {
 /**
  * @brief 高性能路由器
  *
- * 双层查找机制:
+ * 三层查找机制:
  * 1. 静态路由: 哈希表 O(1) 查找
  * 2. 动态路由: 基数树，按优先级匹配 (Static > Param > CatchAll)
- * 3. 正则路由: 回退到正则匹配
+ * 3. 正则路由: 基数树前缀分桶 + 桶内正则匹配
  */
 class Router {
 public:
@@ -71,6 +59,7 @@ public:
 
   /**
    * @brief 注册正则表达式路由（回调函数方式）
+   * 正则路由会按前缀分桶存储在基数树中
    */
   void add_regex_route(HttpMethod method, const std::string &regex_pattern,
                        const std::vector<std::string> &param_names,
@@ -130,10 +119,9 @@ private:
   bool is_dynamic_path(const std::string &path) const;
 
   /**
-   * @brief 双层查找
-   * 1. 先查静态路由哈希表
-   * 2. 再查基数树（动态路由）
-   * 3. 最后查正则路由
+   * @brief 三层查找
+   * 1. 静态路由哈希表
+   * 2. 基数树（动态路由 + 正则路由）
    */
   RouteContext find_route(const std::string &path, HttpMethod method);
 
@@ -152,11 +140,8 @@ private:
   // 静态路由: 哈希表 (path -> handlers)
   std::unordered_map<std::string, StaticRouteEntry> static_routes_;
 
-  // 动态路由: 基数树
+  // 动态路由 + 正则路由: 统一基数树
   RadixTree radix_tree_;
-
-  // 正则路由: 线性列表（较少使用）
-  std::vector<RegexRouteEntry> regex_routes_;
 
   // 路由级中间件映射
   std::unordered_map<std::string, std::vector<Middleware::ptr>>
