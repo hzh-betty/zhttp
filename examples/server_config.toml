@@ -1,0 +1,38 @@
+# zhttp 服务器配置示例
+# 支持的配置项如下
+
+[server]
+host = "0.0.0.0"
+port = 8080
+name = "zhttp/1.0"
+daemon = false
+
+[threads]
+count = 4
+# 栈模式: "independent" (独立栈) 或 "shared" (共享栈)
+# 共享栈模式可以减少内存使用，适合大量协程场景
+# 独立栈模式性能更好，适合计算密集型场景
+stack_mode = "independent"
+
+[ssl]
+enabled = false
+cert_file = "/path/to/cert.pem"
+key_file = "/path/to/key.pem"
+
+[logging]
+# 日志级别: "debug", "info", "warning", "error"
+level = "info"
+# 日志文件路径（可选，不设置则输出到控制台）
+# file = "/var/log/zhttp.log"
+
+[timeout]
+# 超时时间，单位：毫秒
+read = 30000
+write = 30000
+keepalive = 60000
+
+[buffer]
+# 请求体最大大小，单位：字节
+max_body_size = 10485760  # 10MB
+# 缓冲区大小
+size = 8192

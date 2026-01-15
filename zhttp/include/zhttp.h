@@ -25,6 +25,7 @@
 
 // 工具
 #include "daemon.h"
+#include "server_config.h"
 
 // 日志
 #include "zhttp_logger.h"

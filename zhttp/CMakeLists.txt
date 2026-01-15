@@ -24,6 +24,7 @@ set(ZHTTP_SOURCES
     src/ssl_context.cc
     src/https_server.cc
     src/daemon.cc
+    src/server_config.cc
     src/http_server_builder.cc
 )
 

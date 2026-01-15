@@ -4,6 +4,7 @@
 #include "http_server.h"
 #include "middleware.h"
 #include "route_handler.h"
+#include "server_config.h"
 
 #include <memory>
 #include <string>
@@ -12,11 +13,26 @@ namespace zhttp {
 
 /**
  * @brief HTTP服务器建造者
- * 提供链式调用API，类似Drogon的使用方式
+ * 提供链式调用API和TOML配置两种初始化方式
  */
 class HttpServerBuilder {
 public:
   HttpServerBuilder();
+
+  // ========== 从配置初始化 ==========
+
+  /**
+   * @brief 从 TOML 配置文件加载
+   * @param config_path TOML 配置文件路径
+   */
+  HttpServerBuilder &from_config(const std::string &config_path);
+
+  /**
+   * @brief 从 ServerConfig 对象初始化
+   */
+  HttpServerBuilder &from_config(const ServerConfig &config);
+
+  // ========== 链式配置 API ==========
 
   /**
    * @brief 设置监听地址
@@ -27,6 +43,22 @@ public:
    * @brief 设置线程数
    */
   HttpServerBuilder &threads(size_t num_threads);
+
+  /**
+   * @brief 设置协程栈模式
+   * @param mode 栈模式 (INDEPENDENT 或 SHARED)
+   */
+  HttpServerBuilder &stack_mode(StackMode mode);
+
+  /**
+   * @brief 使用共享栈模式
+   */
+  HttpServerBuilder &use_shared_stack();
+
+  /**
+   * @brief 使用独立栈模式（默认）
+   */
+  HttpServerBuilder &use_independent_stack();
 
   /**
    * @brief 启用HTTPS
@@ -100,6 +132,11 @@ public:
   HttpServerBuilder &daemon(bool enable = true);
 
   /**
+   * @brief 设置服务器名称
+   */
+  HttpServerBuilder &server_name(const std::string &name);
+
+  /**
    * @brief 构建并启动服务器
    * @return 服务器对象
    */
@@ -110,15 +147,13 @@ public:
    */
   void run();
 
+  /**
+   * @brief 获取当前配置
+   */
+  const ServerConfig &config() const { return config_; }
+
 private:
-  std::string host_;
-  uint16_t port_;
-  size_t num_threads_;
-  bool use_https_;
-  std::string cert_file_;
-  std::string key_file_;
-  bool daemon_mode_;
-  std::string log_level_;
+  ServerConfig config_;
 
   std::vector<Middleware::ptr> middlewares_;
   std::vector<std::tuple<HttpMethod, std::string, RouteHandlerWrapper>> routes_;
